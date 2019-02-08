@@ -1047,6 +1047,7 @@ struct macb {
 	struct mii_bus		*mii_bus;
 	struct phy_device	*phy_dev;
 	struct device_node	*phy_node;
+	int 			phy_irq;
 	int 			link;
 	int 			speed;
 	int 			duplex;
@@ -1106,6 +1107,9 @@ static inline int gem_ptp_do_txstamp(struct macb_queue *queue, struct sk_buff *s
 {
 	if (queue->bp->tstamp_config.tx_type == TSTAMP_DISABLED)
 		return -ENOTSUPP;
+
+	if (!(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
+		return 0;
 
 	return gem_ptp_txstamp(queue, skb, desc);
 }
