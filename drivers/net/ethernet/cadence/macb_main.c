@@ -79,6 +79,124 @@
 #define MACB_HALT_TIMEOUT	1230
 #define MACB_PM_TIMEOUT  100 /* ms */
 
+/* PHolmes
+ *
+ * Put in memory allocation debug to track memory leaks
+ *
+ */
+//#define DEBUG_MEM 1
+
+int g_alloced = 0;
+int g_allocedSkb_TX = 0;
+int g_allocedSkb_RX = 0;
+
+#define SKB_TX true
+#define SKB_RX false
+
+void*
+_kmalloc(const char* head, int size, u32 flag)
+{
+	void* ptr = kmalloc(size, flag);
+	g_alloced++;
+	#ifdef DEBUG_MEM
+	printk("kMalloc[%s]: 0x%llx[%d], total #%d, TX #%d, RX #%d\n", head, (u64)ptr, size, g_alloced, g_allocedSkb_TX, g_allocedSkb_RX);
+	#endif
+	return ptr;
+}
+void*
+_kzalloc(const char* head, int size, u32 flag)
+{
+	void* ptr = kzalloc(size, flag);
+	g_alloced++;
+	#ifdef DEBUG_MEM
+	printk("kZalloc[%s]: 0x%llx[%d], total #%d, TX #%d, RX #%d\n", head, (u64)ptr, size, g_alloced, g_allocedSkb_TX, g_allocedSkb_RX);
+	#endif
+	return ptr;
+}
+
+struct sk_buff*
+_dev_kalloc_skb(const char* head, struct macb* bp, size_t size, bool bIsTX)
+{
+	struct sk_buff* skb;
+	if (bIsTX)
+	{
+		skb = NULL;
+		g_allocedSkb_TX++;
+		#ifdef DEBUG_MEM
+		printk("skbAlloc[%s]: 0x%llx[%d], TX #%d, RX #%d\n", head, (u64)skb, (u32)size, g_allocedSkb_TX, g_allocedSkb_RX);
+		#endif
+	}
+	else
+	{
+		skb = netdev_alloc_skb(bp->dev, size);
+		g_allocedSkb_RX++;
+	}
+	return skb;
+}
+
+void
+_kfree(const char* head, void* ptr)
+{
+	kfree(ptr);
+	g_alloced--;
+	#ifdef DEBUG_MEM
+	printk("Kfree[%s]: 0x%llx, totalK %d, TX #%d, RX #%d\n", head, (u64)ptr, g_alloced, g_allocedSkb_TX, g_allocedSkb_RX);
+	#endif
+}
+void
+_dev_kfree_skb(const char* head, struct sk_buff* skb, bool bIsTX)
+{
+	dev_kfree_skb(skb);
+	if (bIsTX)
+	{
+		g_allocedSkb_TX--;
+		#ifdef DEBUG_MEM
+		printk("skbFree[%s]: 0x%llx, TX #%d, RX #%d\n", head, (u64)skb, g_allocedSkb_TX, g_allocedSkb_RX);
+		#endif
+	}
+	else
+		g_allocedSkb_RX--;
+}
+
+void
+_dev_kfree_skb_any(const char* head, struct sk_buff* skb, bool bIsTX)
+{
+	dev_kfree_skb_any(skb);
+	if (bIsTX)
+	{
+		g_allocedSkb_TX--;
+		#ifdef DEBUG_MEM
+		printk("skbFreeAny[%s]: 0x%llx, TX #%d, RX #%d\n", head, (u64)skb, g_allocedSkb_TX, g_allocedSkb_RX);
+		#endif
+	}
+	else
+		g_allocedSkb_RX--;
+}
+
+void
+_dev_kfree_skb_irq(const char* head, struct sk_buff* skb, bool bIsTX)
+{
+	dev_kfree_skb_irq(skb);
+	if (bIsTX)
+	{
+		g_allocedSkb_TX--;
+		#ifdef DEBUG_MEM
+		printk("skbKFree[%s]: 0x%llx, TX #%d, RX #%d\n", head, (u64)skb, g_allocedSkb_TX, g_allocedSkb_RX);
+		#endif
+	}
+	else
+		g_allocedSkb_RX--;
+}
+
+void
+_netif_receive_skb(const char* head, struct sk_buff* skb)
+{
+	netif_receive_skb(skb);
+	g_allocedSkb_RX--;
+	//printk("_netifFree(rcv)[%s]: 0x%llx, totalSkb %d\n", head, (u64)skb, g_allocedSkb);
+}
+
+
 /* DMA buffer descriptor might be different size
  * depends on hardware configuration:
  *
@@ -106,6 +224,7 @@
  *    word 5: timestamp word 1
  *    word 6: timestamp word 2
  */
+
 static unsigned int macb_dma_desc_get_size(struct macb *bp)
 {
 #ifdef MACB_EXT_DESC
@@ -511,6 +630,10 @@ static int macb_halt_tx(struct macb *bp)
 
 static void macb_tx_unmap(struct macb *bp, struct macb_tx_skb *tx_skb)
 {
+	#ifdef DEBUG_MEM
+	printk("macb_tx_unmap(tx %llx, skb %llx)\n", (u64)tx_skb, (u64)tx_skb->skb);
+	#endif
+
 	if (tx_skb->mapping) {
 		if (tx_skb->mapped_as_page)
 			dma_unmap_page(&bp->pdev->dev, tx_skb->mapping,
@@ -522,7 +645,7 @@ static void macb_tx_unmap(struct macb *bp, struct macb_tx_skb *tx_skb)
 	}
 
 	if (tx_skb->skb) {
-		dev_kfree_skb_any(tx_skb->skb);
+		_dev_kfree_skb_any("macb_tx_unmap", tx_skb->skb, SKB_TX);
 		tx_skb->skb = NULL;
 	}
 }
@@ -711,6 +834,7 @@ static void macb_tx_interrupt(struct macb_queue *queue)
 					/* skb now belongs to timestamp buffer
 					 * and will be removed later
 					 */
+					printk("PKT->PTP: tx %llx, skp %llx\n", (u64)tx_skb, (u64)skb);
 					tx_skb->skb = NULL;
 				}
 				netdev_vdbg(bp->dev, "skb %u (data %p) TX complete\n",
@@ -758,7 +882,7 @@ static void gem_rx_refill(struct macb *bp)
 
 		if (!bp->rx_skbuff[entry]) {
 			/* allocate sk_buff for this free entry in ring */
-			skb = netdev_alloc_skb(bp->dev, bp->rx_buffer_size);
+			skb = _dev_kalloc_skb("gem_rx_refill_1", bp, bp->rx_buffer_size, SKB_RX);
 			if (unlikely(!skb)) {
 				netdev_err(bp->dev,
 					   "Unable to allocate sk_buff\n");
@@ -770,7 +894,7 @@ static void gem_rx_refill(struct macb *bp)
 					       bp->rx_buffer_size,
 					       DMA_FROM_DEVICE);
 			if (dma_mapping_error(&bp->pdev->dev, paddr)) {
-				dev_kfree_skb(skb);
+				_dev_kfree_skb("gem_rx_refill", skb, SKB_RX);
 				break;
 			}
 
@@ -910,7 +1034,7 @@ static int gem_rx(struct macb *bp, int budget)
 			       skb->data, 32, true);
 #endif
 
-		netif_receive_skb(skb);
+		_netif_receive_skb("gem_rx", skb);
 	}
 
 	gem_rx_refill(bp);
@@ -942,7 +1066,7 @@ static int macb_rx_frame(struct macb *bp, unsigned int first_frag,
 	 * the two padding bytes into the skb so that we avoid hitting
 	 * the slowpath in memcpy(), and pull them off afterwards.
 	 */
-	skb = netdev_alloc_skb(bp->dev, len + NET_IP_ALIGN);
+	skb = _dev_kalloc_skb("macb_rx_frame_1", bp, len + NET_IP_ALIGN, SKB_RX);
 	if (!skb) {
 		bp->dev->stats.rx_dropped++;
 		for (frag = first_frag; ; frag++) {
@@ -968,7 +1092,7 @@ static int macb_rx_frame(struct macb *bp, unsigned int first_frag,
 
 		if (offset + frag_len > len) {
 			if (unlikely(frag != last_frag)) {
-				dev_kfree_skb_any(skb);
+				_dev_kfree_skb_any("macb_rx_frame", skb, SKB_RX);
 				return -1;
 			}
 			frag_len = len - offset;
@@ -1007,7 +1131,7 @@ static int macb_rx_frame(struct macb *bp, unsigned int first_frag,
 	bp->dev->stats.rx_bytes += skb->len;
 	netdev_vdbg(bp->dev, "received skb of length %u, csum: %08x\n",
 		    skb->len, skb->csum);
-	netif_receive_skb(skb);
+	_netif_receive_skb("macb_rx_frame", skb);
 
 	return 0;
 }
@@ -1411,6 +1535,9 @@ static unsigned int macb_tx_map(struct macb *bp,
 	}
 
 	/* This is the last buffer of the frame: save socket buffer */
+	#ifdef DEBUG_MEM
+	printk("MAP TX: tx %llx, skb %llx\n", (u64)tx_skb, (u64)skb);
+	#endif
 	tx_skb->skb = skb;
 
 	/* Update TX ring: update buffer descriptors in reverse order
@@ -1610,14 +1737,17 @@ static int macb_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_BUSY;
 	}
 
+	// For debug output
+	(void)_dev_kalloc_skb("macb_start_xmit", bp, 0, SKB_TX);
+
 	if (macb_clear_csum(skb)) {
-		dev_kfree_skb_any(skb);
+		_dev_kfree_skb_any("macb_start_xmit_1", skb, SKB_TX);
 		goto unlock;
 	}
 
 	/* Map socket buffer for DMA transfer */
 	if (!macb_tx_map(bp, queue, skb, hdrlen)) {
-		dev_kfree_skb_any(skb);
+		_dev_kfree_skb_any("macb_start_xmit_2", skb, SKB_TX);
 		goto unlock;
 	}
 
@@ -1656,6 +1786,7 @@ static void macb_init_rx_buffer_size(struct macb *bp, size_t size)
 		   bp->dev->mtu, bp->rx_buffer_size);
 }
 
+
 static void gem_free_rx_buffers(struct macb *bp)
 {
 	struct sk_buff		*skb;
@@ -1666,27 +1797,34 @@ static void gem_free_rx_buffers(struct macb *bp)
 	if (!bp->rx_skbuff)
 		return;
 
+	#ifdef DEBUG_MEM
+	printk("gem_free_rx_buffers: #%d...\n", bp->rx_ring_size);
+	#endif
+	
 	for (i = 0; i < bp->rx_ring_size; i++) {
 		skb = bp->rx_skbuff[i];
-
 		if (!skb)
+		{
+			printk("ERROR: NULL RX Buffer\n");
 			continue;
-
+		}
 		desc = macb_rx_desc(bp, i);
 		addr = macb_get_addr(bp, desc);
 
 		dma_unmap_single(&bp->pdev->dev, addr, bp->rx_buffer_size,
 				 DMA_FROM_DEVICE);
-		dev_kfree_skb_any(skb);
-		skb = NULL;
+		_dev_kfree_skb_any("gem_free_rx_buffers", skb, SKB_RX);
 	}
 
-	kfree(bp->rx_skbuff);
+	_kfree("gem_free_rx_buffers", bp->rx_skbuff);
 	bp->rx_skbuff = NULL;
 }
 
 static void macb_free_rx_buffers(struct macb *bp)
 {
+	#ifdef DEBUG_MEM
+	printk("macb_free_rx_buffers: #%d...\n", bp->rx_ring_size);
+	#endif
 	if (bp->rx_buffers) {
 		dma_free_coherent(&bp->pdev->dev,
 				  bp->rx_ring_size * bp->rx_buffer_size,
@@ -1699,6 +1837,7 @@ static void macb_free_consistent(struct macb *bp)
 {
 	struct macb_queue *queue;
 	unsigned int q;
+
 
 	bp->macbgem_ops.mog_free_rx_buffers(bp);
 	if (bp->rx_ring) {
@@ -1713,8 +1852,8 @@ static void macb_free_consistent(struct macb *bp)
 		bp->rx_ring_tieoff = NULL;
 	}
 
-	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
-		kfree(queue->tx_skb);
+	for (q = 0, queue = bp->queues; q  < bp->num_queues; ++q, ++queue) {
+		_kfree("macb_free_consistent", queue->tx_skb);
 		queue->tx_skb = NULL;
 		if (queue->tx_ring) {
 			dma_free_coherent(&bp->pdev->dev, TX_RING_BYTES(bp),
@@ -1729,7 +1868,7 @@ static int gem_alloc_rx_buffers(struct macb *bp)
 	int size;
 
 	size = bp->rx_ring_size * sizeof(struct sk_buff *);
-	bp->rx_skbuff = kzalloc(size, GFP_KERNEL);
+	bp->rx_skbuff = _kzalloc("gem_alloc_rx_buffers", size, GFP_KERNEL);
 	if (!bp->rx_skbuff)
 		return -ENOMEM;
 	else
@@ -1774,7 +1913,7 @@ static int macb_alloc_consistent(struct macb *bp)
 			   queue->tx_ring);
 
 		size = bp->tx_ring_size * sizeof(struct macb_tx_skb);
-		queue->tx_skb = kmalloc(size, GFP_KERNEL);
+		queue->tx_skb = _kmalloc("macb_alloc_consistent_1", size, GFP_KERNEL);
 		if (!queue->tx_skb)
 			goto out_err;
 	}
@@ -2967,6 +3106,7 @@ static int macb_init(struct platform_device *pdev)
 
 	/* setup appropriated routines according to adapter type */
 	if (macb_is_gem(bp)) {
+		printk("Init Device: GEM\n");
 		bp->max_tx_length = GEM_MAX_TX_LEN;
 		bp->macbgem_ops.mog_alloc_rx_buffers = gem_alloc_rx_buffers;
 		bp->macbgem_ops.mog_free_rx_buffers = gem_free_rx_buffers;
@@ -2974,6 +3114,7 @@ static int macb_init(struct platform_device *pdev)
 		bp->macbgem_ops.mog_rx = gem_rx;
 		dev->ethtool_ops = &gem_ethtool_ops;
 	} else {
+		printk("Init Device: MACB\n");
 		bp->max_tx_length = MACB_MAX_TX_LEN;
 		bp->macbgem_ops.mog_alloc_rx_buffers = macb_alloc_rx_buffers;
 		bp->macbgem_ops.mog_free_rx_buffers = macb_free_rx_buffers;
@@ -3166,12 +3307,13 @@ static int at91ether_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 
 		/* Store packet information (to free when Tx completed) */
+		printk("MAP TX_91: lp %llx, skb %llx\n", (u64)lp, (u64)skb);
 		lp->skb = skb;
 		lp->skb_length = skb->len;
 		lp->skb_physaddr = dma_map_single(NULL, skb->data, skb->len,
 							DMA_TO_DEVICE);
 		if (dma_mapping_error(NULL, lp->skb_physaddr)) {
-			dev_kfree_skb_any(skb);
+			_dev_kfree_skb_any("at91ether_start_xmit", skb, SKB_TX);
 			dev->stats.tx_dropped++;
 			netdev_err(dev, "%s: DMA mapping error\n", __func__);
 			return NETDEV_TX_OK;
@@ -3205,7 +3347,7 @@ static void at91ether_rx(struct net_device *dev)
 	while (desc->addr & MACB_BIT(RX_USED)) {
 		p_recv = lp->rx_buffers + lp->rx_tail * AT91ETHER_MAX_RBUFF_SZ;
 		pktlen = MACB_BF(RX_FRMLEN, desc->ctrl);
-		skb = netdev_alloc_skb(dev, pktlen + 2);
+		skb = _dev_kalloc_skb("at91ether_rx", lp, pktlen + 2, SKB_RX);
 		if (skb) {
 			skb_reserve(skb, 2);
 			skb_put_data(skb, p_recv, pktlen);
@@ -3254,15 +3396,21 @@ static irqreturn_t at91ether_interrupt(int irq, void *dev_id)
 	if (intstatus & MACB_BIT(TCOMP)) {
 		/* The TCOM bit is set even if the transmission failed */
 		if (intstatus & (MACB_BIT(ISR_TUND) | MACB_BIT(ISR_RLE)))
+		{
+			printk("TX-skb ERR!\n");
 			dev->stats.tx_errors++;
-
+		}
 		if (lp->skb) {
-			dev_kfree_skb_irq(lp->skb);
+			_dev_kfree_skb_irq("at91ether_interrupt", lp->skb, SKB_TX);
 			lp->skb = NULL;
 			dma_unmap_single(NULL, lp->skb_physaddr,
 					 lp->skb_length, DMA_TO_DEVICE);
 			dev->stats.tx_packets++;
 			dev->stats.tx_bytes += lp->skb_length;
+		}
+		else
+		{
+			printk("TX-skb NULL!\n");
 		}
 		netif_wake_queue(dev);
 	}
