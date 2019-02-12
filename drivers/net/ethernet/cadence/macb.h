@@ -1109,7 +1109,7 @@ static inline int gem_ptp_do_txstamp(struct macb_queue *queue, struct sk_buff *s
 		return -ENOTSUPP;
 
 	if (!(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
-		return 0;
+		return -1;
 
 	return gem_ptp_txstamp(queue, skb, desc);
 }
