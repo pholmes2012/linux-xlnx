@@ -8,8 +8,6 @@
  * published by the Free Software Foundation.
  */
 
-// Paul Holmes was here!
-
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/clk.h>
 #include <linux/module.h>
@@ -81,19 +79,6 @@
 #define MACB_HALT_TIMEOUT	1230
 #define MACB_PM_TIMEOUT  100 /* ms */
 
-
-void
-_dev_kfree_skb(const char* head, struct sk_buff* skb)
-{
-	printk("skbFree[%s]: 0x%llx\n", head, (u64)skb);
-}
-
-void
-_dev_kfree_skb_any(const char* head, struct sk_buff* skb)
-{
-	printk("skbFreeAny[%s]: 0x%llx\n", head, (u64)skb);
-}
-
 /* DMA buffer descriptor might be different size
  * depends on hardware configuration:
  *
@@ -121,7 +106,6 @@ _dev_kfree_skb_any(const char* head, struct sk_buff* skb)
  *    word 5: timestamp word 1
  *    word 6: timestamp word 2
  */
-
 static unsigned int macb_dma_desc_get_size(struct macb *bp)
 {
 #ifdef MACB_EXT_DESC
@@ -538,7 +522,7 @@ static void macb_tx_unmap(struct macb *bp, struct macb_tx_skb *tx_skb)
 	}
 
 	if (tx_skb->skb) {
-		_dev_kfree_skb_any("macb_tx_unmap", tx_skb->skb);
+		dev_kfree_skb_any(tx_skb->skb);
 		tx_skb->skb = NULL;
 	}
 }
@@ -786,7 +770,7 @@ static void gem_rx_refill(struct macb *bp)
 					       bp->rx_buffer_size,
 					       DMA_FROM_DEVICE);
 			if (dma_mapping_error(&bp->pdev->dev, paddr)) {
-				_dev_kfree_skb("gem_rx_refill", skb);
+				dev_kfree_skb(skb);
 				break;
 			}
 
@@ -984,7 +968,7 @@ static int macb_rx_frame(struct macb *bp, unsigned int first_frag,
 
 		if (offset + frag_len > len) {
 			if (unlikely(frag != last_frag)) {
-				_dev_kfree_skb_any("macb_rx_frame", skb);
+				dev_kfree_skb_any(skb);
 				return -1;
 			}
 			frag_len = len - offset;
@@ -1627,13 +1611,13 @@ static int macb_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (macb_clear_csum(skb)) {
-		_dev_kfree_skb_any("macb_start_xmit_1", skb);
+		dev_kfree_skb_any(skb);
 		goto unlock;
 	}
 
 	/* Map socket buffer for DMA transfer */
 	if (!macb_tx_map(bp, queue, skb, hdrlen)) {
-		_dev_kfree_skb_any("macb_start_xmit_2", skb);
+		dev_kfree_skb_any(skb);
 		goto unlock;
 	}
 
@@ -1672,7 +1656,6 @@ static void macb_init_rx_buffer_size(struct macb *bp, size_t size)
 		   bp->dev->mtu, bp->rx_buffer_size);
 }
 
-
 static void gem_free_rx_buffers(struct macb *bp)
 {
 	struct sk_buff		*skb;
@@ -1694,7 +1677,7 @@ static void gem_free_rx_buffers(struct macb *bp)
 
 		dma_unmap_single(&bp->pdev->dev, addr, bp->rx_buffer_size,
 				 DMA_FROM_DEVICE);
-		_dev_kfree_skb_any("gem_free_rx_buffers", skb);
+		dev_kfree_skb_any(skb);
 		skb = NULL;
 	}
 
@@ -3188,7 +3171,7 @@ static int at91ether_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		lp->skb_physaddr = dma_map_single(NULL, skb->data, skb->len,
 							DMA_TO_DEVICE);
 		if (dma_mapping_error(NULL, lp->skb_physaddr)) {
-			_dev_kfree_skb_any("at91ether_start_xmit", skb);
+			dev_kfree_skb_any(skb);
 			dev->stats.tx_dropped++;
 			netdev_err(dev, "%s: DMA mapping error\n", __func__);
 			return NETDEV_TX_OK;
